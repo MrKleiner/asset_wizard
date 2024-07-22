@@ -2,7 +2,7 @@ bl_info = {
 	'name': 'Asset Wizrd',
 	'author': 'MrKleiner',
 	'version': (0, 53),
-	'blender': (4, 1, 1),
+	'blender': (4, 2, 0),
 	'location': 'N menu in the asset browser',
 	'description': """Asset Nexus. Turn Blender into global mega asset manager""",
 	'doc_url': 'https://github.com/MrKleiner/blvtf',

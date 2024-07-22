@@ -14,7 +14,7 @@ WZRD_APPDATA = Path().home() / 'AppData' / 'Roaming' / 'blender_assetwzrd'
 WZRD_APPDATA_TEMP_DIR = WZRD_APPDATA / 'disposable'
 WZRD_APPDATA_PORTS_DIR = WZRD_APPDATA / 'ports'
 
-BL_PORT_FILE = WZRD_APPDATA_PORTS_DIR / 'blender_mset.prtS'
+BL_PORT_FILE = WZRD_APPDATA_PORTS_DIR / 'blender_mset.prt'
 
 
 # ================ THE DFINITIVE ANSWER: ====================

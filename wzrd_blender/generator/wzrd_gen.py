@@ -41,7 +41,7 @@ elif bpy:
 		THISDIR = None
 
 
-FFMPEG = Path('C:/custom/ffmpeg_vulkan/bin/ffmpeg.exe')
+FFMPEG = THISDIR.parent / 'bins' / 'ffmpeg.exe'
 PREVIEW_QUALITY = 4
 PREVIEW_RESOLUTION = 256
 
@@ -1005,7 +1005,7 @@ class AssetWizard:
 			return self._preview_wizard
 
 		self._preview_wizard = self.import_module_from_path(
-			THISDIR / 'preview_wzrd/pwzrd.py',
+			THISDIR.parent / 'pwzrd/pwzrd.py',
 			'preview_wizard'
 		)
 
@@ -1293,8 +1293,17 @@ class AssetWizard:
 		print('Done')
 
 
+def unpack_ffmpeg():
+	import gzip
+	with gzip.open(FFMPEG.parent / 'ffmpeg.gz', 'rb') as f_in:
+		with open(FFMPEG, 'wb') as f_out:
+			while chunk := f_in.read(1024**2):
+				f_out.write(chunk)
 
 
 if __name__ == '__main__':
+	if not FFMPEG.is_file():
+		unpack_ffmpeg()
+
 	asset_wzrd = AssetWizard()
 	asset_wzrd.run()
