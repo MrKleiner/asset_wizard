@@ -185,7 +185,9 @@ class MatMaker:
 
 	@property
 	def albedo(self):
-		return self.mat.albedo.getField('Albedo Map')
+		try:
+			return self.mat.albedo.getField('Albedo Map')
+		except: return None
 	@albedo.setter
 	def albedo(self, tgt):
 		tex = self.mset_texture(tgt)
@@ -198,7 +200,9 @@ class MatMaker:
 
 	@property
 	def ao(self):
-		return self.mat.occlusion.getField('Occlusion Map')
+		try:
+			return self.mat.occlusion.getField('Occlusion Map')
+		except: return None
 	@ao.setter
 	def ao(self, tgt):
 		tex = self.mset_texture(tgt)
@@ -211,7 +215,9 @@ class MatMaker:
 
 	@property
 	def normal(self):
-		return self.mat.surface.getField('Normal Map')
+		try:
+			return self.mat.surface.getField('Normal Map')
+		except: return None
 	@normal.setter
 	def normal(self, tgt):
 		tex = self.mset_texture(tgt)
@@ -224,7 +230,9 @@ class MatMaker:
 
 	@property
 	def bump(self):
-		return self.mat.displacement.getField('Displacement Map')
+		try:
+			return self.mat.displacement.getField('Displacement Map')
+		except: return None
 	@bump.setter
 	def bump(self, tgt):
 		tex = self.mset_texture(tgt)
@@ -238,7 +246,9 @@ class MatMaker:
 
 	@property
 	def rough(self):
-		return self.mat.microsurface.getField('Roughness Map')
+		try:
+			return self.mat.microsurface.getField('Roughness Map')
+		except: return None
 	@rough.setter
 	def rough(self, tgt):
 		tex = self.mset_texture(tgt)
@@ -254,7 +264,9 @@ class MatMaker:
 
 	@property
 	def gloss(self):
-		return self.mat.microsurface.getField('Roughness Map')
+		try:
+			return self.mat.microsurface.getField('Roughness Map')
+		except: return None
 	@gloss.setter
 	def gloss(self, tgt):
 		tex = self.mset_texture(tgt)
@@ -270,12 +282,15 @@ class MatMaker:
 
 	@property
 	def metal(self):
-		return self.mat.reflectivity.getField('Metalness Map')
+		try:
+			return self.mat.reflectivity.getField('Metalness Map')
+		except: return None
 	@metal.setter
 	def metal(self, tgt):
 		tex = self.mset_texture(tgt)
 		tex.sRGB = False
 		self.mat.setSubroutine('reflectivity', 'Metalness')
+		self.mat.reflectivity.setField('Metalness', 1.0)
 		return self.mat.reflectivity.setField(
 			'Metalness Map',
 			tex
@@ -284,7 +299,9 @@ class MatMaker:
 
 	@property
 	def emission(self):
-		return self.mat.emission.getField('Emissive map')
+		try:
+			return self.mat.emission.getField('Emissive map')
+		except: return None
 	@emission.setter
 	def emission(self, tgt):
 		tex = self.mset_texture(tgt)
@@ -298,7 +315,9 @@ class MatMaker:
 
 	@property
 	def alpha(self):
-		return self.mat.transparency.getField('Alpha Map')
+		try:
+			return self.mat.transparency.getField('Alpha Map')
+		except: return None
 	@alpha.setter
 	def alpha(self, tgt):
 		if not tgt:
@@ -347,6 +366,17 @@ class MatMaker:
 			self.rough = self.texture_maps['rough']
 		elif not (self.texture_maps['gloss'] in ('None', None)):
 			self.gloss = self.texture_maps['gloss']
+
+		# WHAT THE FUCK ???????
+		# THE FUCK YOU MEAN THIS CLASS HAS NO ATTRIBUTE "bump"????
+		# IT'S LITERALLY THERE...
+		# IT IS ACCESSIBLE SEPARATELY, BUT NOW WITH hasattr and setattr
+		# WHY ????????????????????????????????????????????????????????
+		# KYS PLEASE YOU STUPID TWAT
+		# if not (self.texture_maps['bump'] in ('None', None)):
+		# 	self.bump = self.texture_maps['bump']
+		# if not (self.texture_maps['metal'] in ('None', None)):
+		# 	self.metal = self.texture_maps['metal']
 
 		self._material = self._mat
 
@@ -433,10 +463,11 @@ class Actions:
 		# if payload_data['mode'] == 'full_append':
 
 		# Because if findMaterial fails - an exception is raised
-		try:
-			existing_mat = mset.findMaterial(payload_data['name'])
-		except ReferenceError:
-			existing_mat = None
+		existing_mat = None
+		for mat in mset.getAllMaterials():
+			if mat.name == payload_data['name']:
+				existing_mat = mset.findMaterial(payload_data['name'])
+				break
 
 		if existing_mat:
 			window_msg(
@@ -572,7 +603,7 @@ def run_pipe():
 	except Exception as e:
 		window_msg(
 			f'Error. Check console. \n'
-			'(Please report any issues on github)',
+			'(Please report any issues on GitHub)',
 			flags=0x00000010
 		)
 
@@ -591,7 +622,7 @@ def main():
 	wzrd_btn = mset.UIButton()
 	wzrd_btn.onClick = run_pipe
 
-	close_btn = mset.UIButton(' Close ')
+	close_btn = mset.UIButton('  Close  ')
 
 	wzrd_btn.setIcon(str(WZRD_APPDATA / 'icon_s64.jpg'))
 
