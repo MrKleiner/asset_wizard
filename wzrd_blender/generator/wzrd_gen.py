@@ -555,7 +555,7 @@ class ImageBasedAsset:
 			rg_img_node.location = self.NODE_LOCS['roughness']
 			rg_img_node.image.colorspace_settings.name = 'Non-Color'
 
-			if self.input_data['gloss']:
+			if self.input_data['gloss'] and not self.input_data['rough']:
 				invert_node = self.node_tree.nodes.new(
 					type='ShaderNodeInvert'
 				)
