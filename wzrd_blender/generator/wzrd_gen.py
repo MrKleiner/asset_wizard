@@ -1,6 +1,6 @@
 from pathlib import Path
 import importlib.util
-# from os import path
+
 import fnmatch
 import uuid
 import hashlib
@@ -660,6 +660,122 @@ class ImageBasedAsset:
 		return self._material
 
 
+class ImageBasedAssetPreview:
+	def __init__(self, parent_asset):
+		self.asset = parent_asset
+		self.raw_path = self.asset.input_data['preview']
+		self.cooked_path = None
+		self.crop_params = self.asset.input_data['pre_crop_data']
+		self.done = False
+
+	@property
+	def eligible(self):
+		if not self.raw_path:
+			return False
+		
+		if not Path(self.raw_path).is_file():
+			return False
+
+		return True
+
+	def generate_cooked_path(self):
+		return BLEND_FILE.parent / f'pwzrd_cooked_{str(uuid.uuid4())}.png'
+
+	def cook(self, tgt_img=None, crop_params=None):
+		if not self.raw_path and not tgt_img:
+			return False
+
+		if tgt_img:
+			self.raw_path = tgt_img
+
+		if crop_params:
+			self.crop_params = crop_params
+
+		intermediate = []
+
+		tgt_img = Path(self.raw_path)
+		img_write_path = self.generate_cooked_path()
+
+		if self.crop_params:
+			p = self.crop_params
+			crop_str = ''.join([
+				# Crop
+				'in_w*', str(p['crop_w']),
+				':',
+				'in_h*', str(p['crop_h']),
+				':',
+				# Center
+				'in_w*', str(p['center_w']),
+				':',
+				'in_h*', str(p['center_h']),
+			])
+			subprocess.call(
+				[
+					str(FFMPEG),
+					'-y',
+					'-loglevel', 'quiet',
+					'-i', str(tgt_img),
+					'-vf', f'crop={crop_str}',
+					str(img_write_path)
+				],
+				shell=True,
+				stdout=subprocess.DEVNULL
+			)
+
+			if not img_write_path.is_file():
+				return False
+
+			intermediate.append(img_write_path)
+
+			tgt_img = img_write_path
+			img_write_path = self.generate_cooked_path()
+
+		subprocess.call(
+			[
+				str(FFMPEG),
+				'-y',
+				'-loglevel', 'quiet',
+				'-i', str(tgt_img),
+				'-vf', f'scale={PREVIEW_RESOLUTION}:-1',
+				'-qscale:v', str(PREVIEW_QUALITY),
+				str(img_write_path)
+			],
+			shell=True,
+			stdout=subprocess.DEVNULL
+		)
+
+		while intermediate:
+			intermediate.pop().unlink(missing_ok=True)
+
+		if not img_write_path.is_file():
+			return False
+
+		self.cooked_path = img_write_path
+		return True
+
+	def apply(self, del_source=False):
+		if not self.cooked_path:
+			return False
+
+		context = bpy.context
+		override = context.copy()
+		override['id'] = self.asset.asset_data
+		with context.temp_override(**override):
+			bpy.ops.ed.lib_id_load_custom_preview(
+				filepath=str(self.cooked_path)
+			)
+
+		self.done = True
+		self.cooked_path.unlink(missing_ok=True)
+		self.cooked_path = None
+
+		if del_source and self.raw_path:
+			Path(self.raw_path).unlink(missing_ok=True)
+			self.raw_path = None
+
+		return True
+
+
 
 class ImageBasedAssetCatalogueItem:
 	def __init__(self, parent_cat, input_data):
@@ -670,6 +786,8 @@ class ImageBasedAssetCatalogueItem:
 		self._asset_data = None
 
 		self._cat_uid = None
+
+		self.preview = ImageBasedAssetPreview(self)
 
 	# Calling this will only return the underlying material
 	# datablock regardless of whether it's registered in the asset catalogue
@@ -684,191 +802,6 @@ class ImageBasedAssetCatalogueItem:
 				return True
 
 		return False
-
-	def generate_preview(self, tgt_img, pre_crop_data=None):
-		tgt_img = Path(tgt_img)
-		img_write_path = BLEND_FILE.parent / f'{str(uuid.uuid4())}.png'
-
-		if pre_crop_data:
-			pcd = pre_crop_data
-			pre_crop_write_path = BLEND_FILE.parent / f'{str(uuid.uuid4())}_pcrop.png'
-			crop_str = ''.join([
-				# Crop
-				'in_w*', str(pcd['crop_w']),
-				':',
-				'in_h*', str(pcd['crop_h']),
-				':',
-				# Center
-				'in_w*', str(pcd['center_w']),
-				':',
-				'in_h*', str(pcd['center_h']),
-			])
-			subprocess.call(
-				[
-					str(FFMPEG),
-					'-y',
-					'-loglevel', 'quiet',
-					'-i', str(tgt_img),
-					'-vf', f'crop={crop_str}',
-					str(pre_crop_write_path)
-				],
-				shell=True,
-				stdout=subprocess.DEVNULL
-			)
-			tgt_img = pre_crop_write_path
-
-		subprocess.call(
-			[
-				str(FFMPEG),
-				'-y',
-				'-loglevel', 'quiet',
-				'-i', str(tgt_img),
-				'-vf', f'scale={PREVIEW_RESOLUTION}:-1',
-				'-qscale:v', str(PREVIEW_QUALITY),
-				str(img_write_path)
-			],
-			shell=True,
-			stdout=subprocess.DEVNULL
-		)
-
-		if not img_write_path.is_file():
-			print('Failed to generate preview for', tgt_img, img_write_path)
-			return
-
-		# img_write_path
-
-		# img_write_path.unlink(missing_ok=True)
-		# if pre_crop_data:
-			# pre_crop_write_path.unlink(missing_ok=True)
-
-	def set_preview(self, tgt_img, pre_crop_data=None):
-		tgt_img = Path(tgt_img)
-		img_write_path = BLEND_FILE.parent / f'pwzrd_{str(uuid.uuid4())}.png'
-
-		if pre_crop_data:
-			pcd = pre_crop_data
-			pre_crop_write_path = BLEND_FILE.parent / f'pwzrd_{str(uuid.uuid4())}_pcrop.png'
-			crop_str = ''.join([
-				# Crop
-				'in_w*', str(pcd['crop_w']),
-				':',
-				'in_h*', str(pcd['crop_h']),
-				':',
-				# Center
-				'in_w*', str(pcd['center_w']),
-				':',
-				'in_h*', str(pcd['center_h']),
-			])
-			subprocess.call(
-				[
-					str(FFMPEG),
-					'-y',
-					'-loglevel', 'quiet',
-					'-i', str(tgt_img),
-					'-vf', f'crop={crop_str}',
-					str(pre_crop_write_path)
-				],
-				shell=True,
-				stdout=subprocess.DEVNULL
-			)
-			tgt_img = pre_crop_write_path
-
-		subprocess.call(
-			[
-				str(FFMPEG),
-				'-y',
-				'-loglevel', 'quiet',
-				'-i', str(tgt_img),
-				'-vf', f'scale={PREVIEW_RESOLUTION}:-1',
-				'-qscale:v', str(PREVIEW_QUALITY),
-				str(img_write_path)
-			],
-			shell=True,
-			stdout=subprocess.DEVNULL
-		)
-
-		if not img_write_path.is_file():
-			print('Failed to generate preview for', tgt_img, img_write_path)
-			return
-
-		yield 'Generated Image'
-
-		context = bpy.context
-		override = context.copy()
-		override['id'] = self.asset_data
-		with context.temp_override(**override):
-			bpy.ops.ed.lib_id_load_custom_preview(
-				filepath=str(img_write_path)
-			)
-
-		img_write_path.unlink(missing_ok=True)
-		if pre_crop_data:
-			pre_crop_write_path.unlink(missing_ok=True)
-
-		yield 'Applied image'
-
-	# Original
-	def _set_preview(self, tgt_img, pre_crop_data=None):
-		tgt_img = Path(tgt_img)
-		img_write_path = BLEND_FILE.parent / f'{str(uuid.uuid4())}.png'
-
-		if pre_crop_data:
-			pcd = pre_crop_data
-			pre_crop_write_path = BLEND_FILE.parent / f'{str(uuid.uuid4())}_pcrop.png'
-			crop_str = ''.join([
-				# Crop
-				'in_w*', str(pcd['crop_w']),
-				':',
-				'in_h*', str(pcd['crop_h']),
-				':',
-				# Center
-				'in_w*', str(pcd['center_w']),
-				':',
-				'in_h*', str(pcd['center_h']),
-			])
-			subprocess.call(
-				[
-					str(FFMPEG),
-					'-y',
-					'-loglevel', 'quiet',
-					'-i', str(tgt_img),
-					'-vf', f'crop={crop_str}',
-					str(pre_crop_write_path)
-				],
-				shell=True,
-				stdout=subprocess.DEVNULL
-			)
-			tgt_img = pre_crop_write_path
-
-		subprocess.call(
-			[
-				str(FFMPEG),
-				'-y',
-				'-loglevel', 'quiet',
-				'-i', str(tgt_img),
-				'-vf', f'scale={PREVIEW_RESOLUTION}:-1',
-				'-qscale:v', str(PREVIEW_QUALITY),
-				str(img_write_path)
-			],
-			shell=True,
-			stdout=subprocess.DEVNULL
-		)
-
-		if not img_write_path.is_file():
-			print('Failed to generate preview for', tgt_img, img_write_path)
-			return
-
-		context = bpy.context
-		override = context.copy()
-		override['id'] = self.asset_data
-		with context.temp_override(**override):
-			bpy.ops.ed.lib_id_load_custom_preview(
-				filepath=str(img_write_path)
-			)
-
-		img_write_path.unlink(missing_ok=True)
-		if pre_crop_data:
-			pre_crop_write_path.unlink(missing_ok=True)
 
 	# Getting this triggers everything to be registered
 	# Returns underlying material datablock, but in registered state
@@ -946,9 +879,12 @@ class AssetWizard:
 		self._blender_cats = None
 		self._preview_wizard = None
 
+		self._allowed_workers = False
+
 		# Create a very simple config
 		self.cfg = {
 			'yield_group': '$all',
+			'allowed_workers': '$all',
 		}
 		for line in bpy.data.texts['asset_wzrd_cfg'].lines:
 			line = line.body
@@ -971,6 +907,22 @@ class AssetWizard:
 		spec.loader.exec_module(module)
 
 		return module
+
+	@property
+	def allowed_workers(self):
+		if self._allowed_workers:
+			return self._allowed_workers
+
+		txt_data = bpy.data.texts.get('allowed_workers')
+		if not txt_data:
+			self._allowed_workers = ['$all',]
+			return self._allowed_workers
+
+		self._allowed_workers = [
+			l.body.strip() for l in txt_data.lines if l.body and not l.body.strip().startswith('#')
+		]
+
+		return self._allowed_workers
 
 	@property
 	def worker_list(self):
@@ -1046,6 +998,9 @@ class AssetWizard:
 	def create_asset_info_lists_mp(self):
 		disks_dict = {}
 		for worker in self.worker_list:
+			if (not worker.__name__ in self.allowed_workers) and (not '$all' in self.allowed_workers):
+				continue
+
 			disk_letter = Path(worker.LIB_BASE_PATH).anchor
 			if not disk_letter in disks_dict:
 				disks_dict[disk_letter] = []
@@ -1074,143 +1029,41 @@ class AssetWizard:
 
 		return asset_infos
 
-	def _run(self):
-		asset_list = []
-
-		yield_grp = self.cfg['yield_group'].strip().split(',')
-
-		# 1 - Create a list of catalogue items
-		for worker in self.worker_list:
-			for asset_info in worker():
-				print(
-					'Traversing',
-					# asset_info['mat_name']
-					' '.join(asset_info['mat_name'].split(' ')[:-1]).ljust(100, ' '),
-					' '.join(asset_info['mat_name'].split(' ')[-1:]),
-				)
-
-				can_yield = any((
-					'$all' in yield_grp,
-					asset_info['yield_category'] in yield_grp,
-				))
-				if not can_yield:
-					print(
-						'Skipping', asset_info['mat_name'],
-						'because target yield_category', asset_info['yield_category'],
-						'is not present in config:', yield_grp
-					)
-					continue
-
-				asset_list.append(ImageBasedAssetCatalogueItem(
-					self.blender_cats,
-					asset_info
-				))
-
-		# Save the blend file (just in case)
-		bpy.ops.wm.save_mainfile()
-
-		# 2 - register catalogues
-		for asset in asset_list:
-			asset.create_cat()
-
-		# Save the blend file (so that it refreshes catalogues)
-		bpy.ops.wm.save_mainfile()
-
-		# 3 - Assign assets to catalogues
-		for asset in asset_list:
-			print('Fully registering', asset.input_data['mat_name'])
-			asset.reg()
-
-		# Save the blend file (just in case)
-		bpy.ops.wm.save_mainfile()
-
-		# Assign previews, where they exist already
-		for asset in asset_list:
-			print('Assigning preview to', asset.input_data['mat_name'])
-			if asset.input_data['preview']:
-				asset.set_preview(
-					asset.input_data['preview'],
-					asset.input_data['pre_crop_data'],
-				)
-
-		# Save the blend file (just in case)
-		bpy.ops.wm.save_mainfile()
-
-		# Generate previews for assets that don't have one
-		with self.preview_wizard(BLENDER_EXECUTABLE) as pwzrd:
-			for asset in asset_list:
-				if asset.input_data['preview']:
-					continue
-
-				print('Rendering preview for', asset.input_data['mat_name'])
-				render_result = pwzrd.render(
-					asset.input_data['custom_preview_prms'] | {
-						'material_source': str(BLEND_FILE),
-						'src_material_name': asset.datablock.name,
-					}
-				).decode()
-				if render_result.startswith('$fail'):
-					print(
-						'Failed to generate preview for',
-						asset.input_data['mat_name'],
-						'Reason:', render_result.split('$fail:')[-1]
-					)
-					continue
-				print('Rendered custom preview:', render_result)
-				asset.set_preview(render_result)
-
-		print('Done')
-
-	@staticmethod
-	def push_prog(i):
-		next(i)
-
 	def assign_previews(self, asset_list):
-		# Assign previews, where they exist already
-
-		processed_asset_list = []
-
-		# Create preview index sorted by drives
+		# Sort assets into groups based by preview's disk letter
 		disks = {}
 		for asset in asset_list:
-			if not asset.input_data['preview']:
-				processed_asset_list.append(asset)
+			if not asset.preview.eligible:
 				continue
 
-			preview = Path(asset.input_data['preview'])
-			disk_letter = preview.anchor
+			disk_letter = Path(asset.preview.raw_path).anchor
 			if not disk_letter in disks:
 				disks[disk_letter] = []
 
 			disks[disk_letter].append(asset)
 
+		# Cook existing previews in threads
 		thread_count = 10
 		thread_pool = []
-		
 
-		prog_pool = []
-		# while asset_list:
 		while any(d for d in disks.values()):
 			thread_pool.clear()
 			for disk in disks.values():
+				if not disk: continue
 				for i in range(thread_count):
-					if not disk:
-						break
+					if not disk: break
 
 					asset = disk.pop()
-					processed_asset_list.append(asset)
+
 					print(
 						len(disk),
-						'Assigning preview to', asset.input_data['mat_name']
+						'Cooking preview for',
+						asset.input_data['mat_name']
 					)
-					iter_push = iter(asset.set_preview(
-						asset.input_data['preview'],
-						asset.input_data['pre_crop_data'],
-					))
-					prog_pool.append(iter_push)
+
 					thread = threading.Thread(
-						target=AssetWizard.push_prog,
-						args=(iter_push,)
+						target=asset.preview.cook,
+						# args=(None,)
 					)
 					thread_pool.append(thread)
 					thread.start()
@@ -1218,15 +1071,12 @@ class AssetWizard:
 			for thread in thread_pool:
 				thread.join()
 
-		print('Assigning generated previews')
-		for i in prog_pool:
-			next(i)
-		prog_pool.clear()
-		print('Assigned generated previews')
+		for asset in asset_list:
+			if asset.preview.cooked_path:
+				print('Applying preview for', asset.input_data['mat_name'])
+				asset.preview.apply()
 
-		thread_pool.clear()
-
-		return processed_asset_list
+		return asset_list
 
 	def run(self):
 		asset_list = []
@@ -1260,7 +1110,8 @@ class AssetWizard:
 
 		# confirm('Done registering. Press Enter To Continue')
 
-		asset_list = self.assign_previews(asset_list)
+		# Assign existing previews
+		self.assign_previews(asset_list)
 
 		# confirm('Done with existing previews. Press Enter To Continue')
 
@@ -1270,7 +1121,7 @@ class AssetWizard:
 		# Generate previews for assets that don't have one
 		with self.preview_wizard(BLENDER_EXECUTABLE) as pwzrd:
 			for asset in asset_list:
-				if asset.input_data['preview']:
+				if asset.preview.done:
 					continue
 
 				print('Rendering preview for', asset.input_data['mat_name'])
@@ -1282,13 +1133,18 @@ class AssetWizard:
 				).decode()
 				if render_result.startswith('$fail'):
 					print(
-						'Failed to generate preview for',
+						'Failed to render Blender preview for',
 						asset.input_data['mat_name'],
 						'Reason:', render_result.split('$fail:')[-1]
 					)
 					continue
-				print('Rendered custom preview:', render_result)
-				asset.set_preview(render_result)
+				print(
+					'Rendered custom preview:', render_result,
+					'for', asset.input_data['mat_name']
+				)
+				# asset.set_preview(render_result)
+				asset.preview.cook(render_result)
+				asset.preview.apply(True)
 
 		print('Done')
 
