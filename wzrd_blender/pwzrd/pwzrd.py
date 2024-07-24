@@ -11,6 +11,7 @@ import os
 import sys
 import shutil
 import socket
+import threading
 
 
 try:
@@ -97,7 +98,7 @@ class BlenderRender:
 
 		    - render_as:
 		        - save_to_path: Render to the specified path.
-		          Returns the very or False
+		          Returns the path or False
 		        - bytes: Return rendered image as bytes.
 
 		    - disp_method:
@@ -109,11 +110,21 @@ class BlenderRender:
 		    - film_exposure:
 		        Exposure (float)
 
+		    - panorama_strength:
+		        Panorama Strength (default to 0.9)
+
 		    - shape:
 		        The shape of the geometry the material will be applied to.
 		        Valid entries are:
 		        - sphere
 		        - plane
+
+		    - render_engine:
+		        Engine used to render the preview.
+		        Valid entries are:
+		        - BLENDER_EEVEE_NEXT
+		        - BLENDER_WORKBENCH
+		        - CYCLES
 
 		Minimum outgoing request length is:
 		MAGIC_ID(3) + CMD(2) + PAYLOAD_LENGTH(4) = 9
@@ -165,6 +176,10 @@ class BlenderRender:
 
 		return self._material
 
+	@property
+	def world(self):
+		return bpy.data.worlds['World']
+
 	def set_render_params(self):
 		resolution = int(
 			256 * self.params.get('size_factor', 1)
@@ -174,6 +189,13 @@ class BlenderRender:
 
 		self.scene.cycles.time_limit = 5 * self.params.get('time_limit_factor', 1)
 		self.scene.cycles.film_exposure = self.params.get('film_exposure', 1.0)
+
+		self.scene.render.engine = self.params.get('render_engine', 'CYCLES')
+
+		panorama_strength = self.params.get('panorama_strength', 1.0)
+		for node in self.world.node_tree.nodes:
+			if node.type == 'BACKGROUND':
+				node.inputs['Strength'].default_value = panorama_strength
 
 	def set_disp_params(self):
 		disp_scale = self.params.get('disp_scale', 0.9)
@@ -297,6 +319,7 @@ class BlenderConnect:
 			try:
 				result = renderer.render()
 			except LookupError as e:
+				print(exception_to_str(e))
 				result = f'$fail:{e}'
 
 		self.cmd_gateway.send(
@@ -328,12 +351,74 @@ class PreviewWizard:
 
 	SETUP_SCRIPT = 'pwzrd_blender_setup.py'
 
-	def __init__(self, blender_executable, preview_shape='sphere'):
+	def __init__(
+		self,
+		blender_executable,
+		preview_shape='sphere',
+		prog_callback=None
+	):
 		self.cmd_gateway = None
 		self.skt = None
 		self.blender_executable = blender_executable
 
-		self.renderer_blend = THISDIR / self.PREVIEW_SHAPES[preview_shape]
+		self.renderer_blend = (
+			THISDIR /
+			self.PREVIEW_SHAPES.get(preview_shape, 'sphere')
+		)
+
+		self.render_prog = 0.0
+		self.blender_proc = None
+		self.prog_callback = prog_callback
+
+	def time_slot_to_ms(self, time_slot_text):
+		time_data = time_slot_text.split(':')
+		s, ms = time_data[-1].strip().split('.')
+		m = time_data[-2]
+		
+		try:
+			h = int(time_data[-3])
+		except ValueError as e:
+			h = 0
+
+		return sum((
+			int(ms),
+			int(s) * 1000,
+			int(m) * (60 * 1000),
+			int(h) * ((60 * 1000) * 60),
+		))
+
+	def callback(self):
+		try:
+			for line in iter(self.blender_proc.stdout.readline, b''):
+				print(line.decode().strip())
+				line = line.decode()
+				line_eligible = all((
+					'Time' in line,
+					'Remaining' in line,
+					'|' in line,
+				))
+				if not line_eligible:
+					continue
+
+				current = None
+				remaining = None
+				for slot in line.split('|'):
+					if 'Time' in slot:
+						current = self.time_slot_to_ms(slot)
+					if 'Remaining' in slot:
+						remaining = self.time_slot_to_ms(slot)
+
+				if current and remaining:
+					total_duration = current + remaining
+					self.prog_callback(abs(
+						1.0 - (remaining / total_duration)
+					))
+
+		except Exception as e:
+			print('Callback Error:', exception_to_str(e))
+			self.terminate()
+			# raise e
+			return
 
 	def __enter__(self):
 		self.skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -347,27 +432,45 @@ class PreviewWizard:
 			str(self.skt.getsockname()[1])
 		).strip().split('\n'))
 
-		subprocess.Popen([
-			self.blender_executable,
-			'-b',
-			self.renderer_blend,
-			'--python-expr',
-			setup_script,
-			'--python',
-			str(THISDIR / Path(__file__).name),
-		])
+		self.blender_proc = subprocess.Popen(
+			[
+				self.blender_executable,
+				'-b',
+				self.renderer_blend,
+				'--python-expr',
+				setup_script,
+				'--python',
+				str(THISDIR / Path(__file__).name),
+			],
+			stdout=subprocess.PIPE
+		)
 
 		self.cl_con, self.cl_addr = self.skt.accept()
 		self.cmd_gateway = CMDGateway(self.cl_con)
 		print('PWZRD main: accepted connection from Blender')
 
+		if self.prog_callback:
+			threading.Thread(
+				target=self.callback,
+				daemon=True
+			).start()
+
 		return self
 
-	def __exit__(self, type, value, traceback):
+	def terminate(self):
 		self.cmd_gateway.send('end_session')
 		self.cl_con.shutdown(socket.SHUT_RDWR)
 		self.cl_con.close()
-		pass
+
+		try:
+			self.blender_proc.kill()
+		except: pass
+
+	def __exit__(self, type, value, traceback):
+		print('Preview Wizard: Exiting')
+		try:
+			self.terminate()
+		except: pass
 
 	def render(self, render_params):
 		self.cmd_gateway.send(

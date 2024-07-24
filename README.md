@@ -30,7 +30,7 @@ assets:
 - Generate Blender asset catalogues with scripts and templates provided
 with the addon.
 - Generate Better material/model previews.
-- Everything is linked, unles specifically told to do otherwise.
+- Everything is linked, unless specifically told to do otherwise.
 Don't waste your storage space with rubbish intermediate files.
 
 

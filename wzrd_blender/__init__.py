@@ -1,11 +1,11 @@
 bl_info = {
 	'name': 'Asset Wizrd',
 	'author': 'MrKleiner',
-	'version': (0, 53),
+	'version': (0, 57),
 	'blender': (4, 2, 0),
 	'location': 'N menu in the asset browser',
 	'description': """Asset Nexus. Turn Blender into global mega asset manager""",
-	'doc_url': 'https://github.com/MrKleiner/blvtf',
+	'doc_url': 'https://github.com/MrKleiner/asset_wizard',
 	'category': 'Add Mesh',
 }
 
@@ -29,12 +29,22 @@ import shutil
 import uuid
 import json
 import threading
+import subprocess
+import struct
+import sys
+import importlib
 
+
+# 
 # Constants
+# 
 WZRD_APPDATA = Path().home() / 'AppData' / 'Roaming' / 'blender_assetwzrd'
 
 WZRD_APPDATA_TEMP_DIR = WZRD_APPDATA / 'disposable'
 WZRD_APPDATA_PORTS_DIR = WZRD_APPDATA / 'ports'
+
+THISDIR = Path(__file__).parent
+
 
 
 # =========================================================
@@ -134,18 +144,32 @@ class LoadAssetFromSource:
 		self._asset_datablock = None
 
 	@property
+	def current_file_is_source(self):
+		current_blend_file = Path(
+			bpy.path.abspath(bpy.data.filepath)
+		)
+		print('Kys?', current_blend_file, Path(bpy.path.abspath(self.asset_data.full_library_path)), str(self.asset_data.full_library_path))
+
+		# return current_blend_file == Path(self.asset_data.full_library_path)
+		# return str(self.asset_data.full_library_path).strip('. ') == ''
+		return bool(self.asset_data.local_id)
+
+	@property
 	def datablock(self):
 		if self._asset_datablock:
 			return self._asset_datablock
 
 		bpy_id_type = self.BPY_ID_TYPES[self.asset_data.id_type]
 
-		with bpy.data.libraries.load(self.asset_data.full_library_path) as (data_from, data_to):
-			getattr(data_to, bpy_id_type).append(
-				self.asset_data.name
-			)
+		if not self.current_file_is_source:
+			with bpy.data.libraries.load(self.asset_data.full_library_path) as (data_from, data_to):
+				getattr(data_to, bpy_id_type).append(
+					self.asset_data.name
+				)
 
-		self._asset_datablock = getattr(bpy.data, bpy_id_type)[self.asset_data.name]
+		self._asset_datablock = (
+			getattr(bpy.data, bpy_id_type)[self.asset_data.name]
+		)
 
 		return self._asset_datablock
 
@@ -160,11 +184,109 @@ class LoadAssetFromSource:
 			)
 
 
+class ProgBarWindowClosed(Exception):
+	pass
 
+class BootlegProgressBar:
+	SKT_EXCEPTIONS = (
+		ConnectionAbortedError,
+		ConnectionResetError,
+		TimeoutError,
+		BrokenPipeError,
+	)
+	def __init__(self, bar_count=1, mute=False):
+		self.skt = None
+		self.listen_port = None
+		# self.prog = 0
 
+		self.skt_wfile = None
+		self.cl_con = None
+		self.cl_addr = None
 
+		self.bar_count = bar_count
 
+		self.mute = mute
 
+	def subp_echo(self, subp):
+		for line in iter(subp.stdout.readline, b''):
+			print('>', line)
+
+	def __enter__(self):
+		if self.mute:
+			return self
+
+		self.skt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		self.skt.bind(
+			('127.0.0.1', 0)
+		)
+		self.skt.listen()
+		self.listen_port = self.skt.getsockname()[1]
+
+		subp = subprocess.Popen(
+			' '.join([
+				sys.executable,
+				str(THISDIR / 'bootleg_progbars.py'),
+				str(self.listen_port),
+				# 'PAUSE'
+			]),
+			creationflags=subprocess.CREATE_NEW_CONSOLE,
+			# stdout=subprocess.PIPE
+		)
+
+		# threading.Thread(
+		# 	target=self.subp_echo,
+		# 	args=(subp,),
+		# 	daemon=True
+		# ).start()
+
+		# assert False
+
+		self.cl_con, self.cl_addr = self.skt.accept()
+		self.skt_wfile = self.cl_con.makefile('wb')
+
+		self.skt_wfile.write(
+			self.bar_count.to_bytes(2, 'little')
+		)
+
+		return self
+
+	def __exit__(self, exc_type, exc_value, exc_traceback):
+		if self.mute:
+			return
+
+		print('Exiting Bootleg Progress Bar')
+
+		try:
+			self.skt_wfile.write(b'DIE')
+			self.skt_wfile.flush()
+			self.cl_con.shutdown(socket.SHUT_RDWR)
+			self.cl_con.close()
+		except: pass
+
+		if exc_type in self.SKT_EXCEPTIONS:
+			print('Progress Bar Window Closed. Terminating')
+			raise ProgBarWindowClosed(
+				'Window closed (Connection aborted)'
+			)
+
+	def set_prog(self, bar_idx, prog, msg=''):
+		if self.mute:
+			return
+
+		self.skt_wfile.write(b'UPD')
+		self.skt_wfile.write(
+			bar_idx.to_bytes(2, 'little')
+		)
+		self.skt_wfile.write(
+			struct.pack('d', float(prog))
+		)
+		msg = (msg or '').encode()
+		self.skt_wfile.write(
+			len(msg).to_bytes(4, 'little')
+		)
+		self.skt_wfile.write(msg)
+
+		self.skt_wfile.flush()
 
 
 
@@ -501,13 +623,136 @@ class ASSETBROWSER_OT_AssetWizard_Shared_ExplorerHighlight(Operator):
 			# asset.full_path,
 		)
 
-		with LoadAssetFromSource(asset) as asset_info:
+		with LoadAssetFromSource(asset, del_on_exit=False) as asset_info:
 			os.system(
 				"""explorer /select,"""
 				f"""{asset_info.datablock['_wzrd_asset_data']['source']}"""
 			)
 
 		return {'FINISHED'}
+
+
+class ASSETBROWSER_OT_AssetWizard_Shared_RenderCustomAssetPreview(Operator):
+	bl_idname = create_operator_name(
+		'shared',
+		'render_custom_preview',
+	)
+	bl_label = 'Render Custom Preview'
+	bl_description = (
+		'Render custom previews for all the selected assets'
+	)
+
+	def execute(self, context):
+		# from .pwzrd.pwzrd import PreviewWizard
+		from .pwzrd import pwzrd
+		importlib.reload(pwzrd)
+		from .pwzrd.pwzrd import PreviewWizard
+
+		from .generator.wzrd_gen import (
+			BLENDER_EXECUTABLE,
+			BLEND_FILE
+		)
+
+		asset_list = context.selected_assets
+		if not asset_list:
+			self.report(
+				{'WARNING'},
+				'Please select some assets first.'
+			)
+			return {'FINISHED'}
+
+		prender_prms = context.scene.wzrd_preview_render_params
+
+		try:
+			with BootlegProgressBar(2, mute=prender_prms.silent) as prog_bar:
+				prog_callback = lambda p: prog_bar.set_prog(0, p, 'Render Progress')
+				with PreviewWizard(BLENDER_EXECUTABLE, prender_prms.shape, prog_callback) as pwzrd:
+					for prog_idx, asset in enumerate(asset_list):
+						prog_bar.set_prog(
+							1,
+							float(prog_idx / len(asset_list)),
+							f'Processing {asset.name}'
+						)
+
+						if asset.id_type != 'MATERIAL':
+							self.report(
+								{'WARNING'},
+								f'Asset {asset.name} is not a material. '
+								'Can only render previews for materials right now. '
+								'Support for models and other types coming soon'
+							)
+							continue
+
+						with LoadAssetFromSource(asset, del_on_exit=False) as asset_info:
+							if not asset_info.current_file_is_source:
+								self.report(
+									{'WARNING'},
+									f'Asset {asset.name} is not from the currently opened '
+									'blend file. Please open the blend file this asset '
+									'is stored in and try again.'
+								)
+								continue
+							print(
+								'Preview Wizard: Rendering custom preview for',
+								asset.name
+							)
+							rendered_image_path = (
+								WZRD_APPDATA_TEMP_DIR /
+								f'custom_preview_{str(uuid.uuid4())}.png'
+							)
+							rendered_image_path.parent.mkdir(
+								parents=True,
+								exist_ok=True
+							)
+							pwzrd.render({
+								'disp_scale':        prender_prms.disp_scale,
+								'disp_midlevel':     prender_prms.disp_midlevel,
+								'size_factor':       prender_prms.size_factor,
+								'time_limit_factor': prender_prms.time_limit_factor,
+								'disp_method':       prender_prms.disp_method,
+								'film_exposure':     prender_prms.film_exposure,
+								'panorama_strength': prender_prms.panorama_strength,
+								'shape':             prender_prms.shape,
+								'render_engine':     prender_prms.render_engine,
+
+								'material_source':   bpy.path.abspath(bpy.data.filepath),
+								'src_material_name': asset_info.datablock.name,
+
+								'render_as':          'save_to_path',
+								'render_output_path': str(rendered_image_path),
+							})
+
+							if not rendered_image_path.is_file():
+								self.report(
+									{'WARNING'},
+									f'Failed to generate preview for {asset.name}'
+								)
+								return {'FINISHED'}
+
+							override = context.copy()
+							override['id'] = asset_info.datablock
+							with context.temp_override(**override):
+								bpy.ops.ed.lib_id_load_custom_preview(
+									filepath=str(rendered_image_path)
+								)
+
+							rendered_image_path.unlink(missing_ok=True)
+
+							prog_bar.set_prog(0, 0.0, 'Render Progress')
+		except ProgBarWindowClosed as e:
+			print('Progress bar window closed. Terminating')
+			try:
+				pwzrd.blender_proc.kill()
+			except: pass
+
+			self.report(
+				{'INFO'},
+				'Execution forcibly terminated.'
+			)
+
+		return {'FINISHED'}
+
+
 
 
 
@@ -684,6 +929,158 @@ class ASSETBROWSER_OT_AssetWizard_MarmosetConnect_SendAsLayerMask(Operator):
 
 
 # =========================
+#         General
+# =========================
+class WZRDPreviewGenParams(bpy.types.PropertyGroup):
+	disp_scale:bpy.props.FloatProperty(
+		name='Displacement Scale',
+		description=(
+			'Displacement "Height" texture map (if applicable) '
+			'is multiplied by this value'
+		),
+		default=0.5,
+		# hard_max=1.0,
+		# hard_min=0.1,
+		precision=2,
+		step=0.1,
+	)
+
+	disp_midlevel:bpy.props.FloatProperty(
+		name='Displacement Midlevel',
+		description=(
+			'"Displacement Midlevel" property of the displacement node '
+			'(if applicable)'
+		),
+		default=0.5,
+		# hard_max=1.0,
+		# hard_min=0.1,
+		precision=2,
+		step=0.1,
+	)
+
+	size_factor:bpy.props.FloatProperty(
+		name='Rendered Image Size Factor',
+		description=(
+			'Scale the output image dimensions by this value. The base is 256.\n'
+			'Pro tip: Maximum asset preview display size in the asset catalogue window is 256'
+		),
+		default=1.0,
+		precision=2,
+		step=0.5,
+	)
+
+	time_limit_factor:bpy.props.FloatProperty(
+		name='Max Render Time Factor',
+		description=(
+			'Multiply the render time limit by this value when '
+			'rendering preview with Cycles. Base is 5 seconds'
+		),
+		default=1.0,
+		precision=2,
+		step=0.5,
+	)
+
+	disp_method:bpy.props.EnumProperty(
+		items=(
+			(
+				'BUMP',
+				'Bump Only',
+				'Normal map only. Geometry not affected.',
+			),
+			(
+				'DISPLACEMENT',
+				'Displacement Only',
+				'Geometry displaced ONLY by BW height map.',
+			),
+			(
+				'BOTH',
+				'Displacement and Bump',
+				'Geometry is displaced by BOTH BW height and normal map.',
+			),
+		),
+		name='Displacement',
+		description=(
+			"""Same as regular material's Displacement property in the settings tab"""
+		),
+		default='DISPLACEMENT'
+	)
+
+	film_exposure:bpy.props.FloatProperty(
+		name='Film Exposure',
+		description=(
+			'Film Exposure'
+		),
+		default=0.9,
+		precision=2,
+		step=0.1,
+	)
+
+	shape:bpy.props.EnumProperty(
+		items=(
+			(
+				'sphere',
+				'Sphere',
+				'Most common shape: A Sphere',
+			),
+			(
+				'plane',
+				'Plane',
+				'A slightly tilted plane',
+			),
+		),
+		name='Sample Object Shape',
+		description=(
+			"""Shape of the object the material will be applied to"""
+		),
+		default='sphere'
+	)
+
+	panorama_strength:bpy.props.FloatProperty(
+		name='Panorama Strength',
+		description=(
+			'The brightness of the HDRi panorama'
+		),
+		default=1.0,
+		precision=2,
+		step=0.1,
+	)
+
+	render_engine:bpy.props.EnumProperty(
+		items=(
+			(
+				'BLENDER_EEVEE_NEXT',
+				'EEVEE',
+				'Blazing fast. Good for fast, yet precise results.\n'
+				'Not so good for complex materials/models with advanced shading',
+			),
+			(
+				'CYCLES',
+				'Cycles',
+				'Still rather fast, because of the time cap, but not instant.\n'
+				'Good for anything.',
+			),
+		),
+		name='Render engine',
+		description=(
+			'The engine used to render the preview with.\n'
+			'Pro tip: EEVEE supports material displacements since Blender 4.2.0'
+		),
+		default='CYCLES'
+	)
+
+	silent:bpy.props.BoolProperty(
+		name='Silent',
+		description=(
+			"""Don't open a window with progress report.\n"""
+			'Pro tip: The window can be used to abort the process by '
+			"""closing it. Otherwise there's no way to stop the generation """
+			'process other than waiting or killing via Task Manager.'
+		),
+		default=False
+	)
+
+
+# =========================
 #         Marmoset
 # =========================
 class WZRDMarmosetPipingProperties(bpy.types.PropertyGroup):
@@ -776,6 +1173,78 @@ class ASSETBROWSER_PT_AssetWizard_SharedOperators(
 			'explorer_highlight',
 		))
 
+class ASSETBROWSER_PT_AssetWizard_CustomAssetPreviewRender(
+	asset_utils.AssetBrowserPanel, Panel
+	):
+	bl_parent_id = 'ASSETBROWSER_PT_AssetWizard_ConnectMainPanel'
+	bl_region_type = 'TOOL_PROPS'
+	bl_category = 'AssetWizard'
+	bl_label = 'Custom Preview'
+
+	def draw(self, context):
+		layout = self.layout
+		wm = context.window_manager
+		asset = context.asset
+		asset_data = asset_utils.SpaceAssetInfo.get_active_asset(context)
+
+		if asset is None:
+			layout.label(text='Select an asset first', icon='INFO')
+			return
+
+
+		layout.column().prop(
+			context.scene.wzrd_preview_render_params,
+			'shape',
+			expand=True
+		)
+		layout.column().prop(
+			context.scene.wzrd_preview_render_params,
+			'disp_method',
+			expand=True
+		)
+
+		layout.row().prop(
+			context.scene.wzrd_preview_render_params,
+			'render_engine',
+			expand=True
+		)
+
+		layout.row().prop(
+			context.scene.wzrd_preview_render_params,
+			'disp_scale',
+		)
+		layout.row().prop(
+			context.scene.wzrd_preview_render_params,
+			'disp_midlevel',
+		)
+		layout.row().prop(
+			context.scene.wzrd_preview_render_params,
+			'size_factor',
+		)
+		layout.row().prop(
+			context.scene.wzrd_preview_render_params,
+			'time_limit_factor',
+		)
+		layout.row().prop(
+			context.scene.wzrd_preview_render_params,
+			'film_exposure',
+		)
+		layout.row().prop(
+			context.scene.wzrd_preview_render_params,
+			'panorama_strength',
+		)
+
+		layout.row().prop(
+			context.scene.wzrd_preview_render_params,
+			'silent',
+		)
+
+		layout.operator(create_operator_name(
+			'shared',
+			'render_custom_preview',
+		))
+
+
 
 # =========================
 #         Marmoset
@@ -849,6 +1318,9 @@ rclasses = (
 	# Property declarations
 	# ----------------------------------
 
+	# General
+	WZRDPreviewGenParams,
+
 	# Marmoset
 	WZRDMarmosetPipingProperties,
 
@@ -859,6 +1331,7 @@ rclasses = (
 
 	# Shared
 	ASSETBROWSER_OT_AssetWizard_Shared_ExplorerHighlight,
+	ASSETBROWSER_OT_AssetWizard_Shared_RenderCustomAssetPreview,
 
 	# Marmoset
 	ASSETBROWSER_OT_AssetWizard_MarmosetConnect_SendAsMaterial,
@@ -876,6 +1349,7 @@ rclasses = (
 	# ----------------------------------
 
 	# Shared
+	ASSETBROWSER_PT_AssetWizard_CustomAssetPreviewRender,
 	ASSETBROWSER_PT_AssetWizard_SharedOperators,
 
 	# Marmoset
@@ -888,22 +1362,45 @@ register_, unregister_ = bpy.utils.register_classes_factory(rclasses)
 def register():
 	register_()
 
+	# General
+	bpy.types.Scene.wzrd_preview_render_params = bpy.props.PointerProperty(
+		type=WZRDPreviewGenParams
+	)
+
 	# Marmoset
 	bpy.types.Scene.wzrd_marmoset_piping_params = bpy.props.PointerProperty(
 		type=WZRDMarmosetPipingProperties
 	)
 
+	for handler in bpy.app.handlers.load_post:
+		do_break = any((
+			'marmoset_connect' in handler.__name__.lower(),
+			handler == marmoset_connect,
+		))
+		if do_break: break
+	else:
+		bpy.app.handlers.load_post.append(marmoset_connect)
+
+	"""
+	# Listen server hook
 	if len(bpy.app.handlers.load_post) > 0:
 		# Black Magic. This somehow ensures the marmoset connect is not started twice
 		if 'marmoset_connect' in bpy.app.handlers.load_post[0].__name__.lower() or marmoset_connect in bpy.app.handlers.load_post:
 			return
-
 	bpy.app.handlers.load_post.append(marmoset_connect)
+	"""
 
 
 def unregister():
 	unregister_()
+
+	try:
+		bpy.app.handlers.load_post.remove(marmoset_connect)
+	except: pass
+
+	"""
 	if len(bpy.app.handlers.load_post) > 0:
 		# Black Magic. This somehow ensures the marmoset connect is not started twice
 		if 'marmoset_connect' in bpy.app.handlers.load_post[0].__name__.lower() or marmoset_connect in bpy.app.handlers.load_post:
 			bpy.app.handlers.load_post.remove(marmoset_connect)
+	"""

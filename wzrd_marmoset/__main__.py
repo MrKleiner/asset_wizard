@@ -471,7 +471,8 @@ class Actions:
 
 		if existing_mat:
 			window_msg(
-				f"""Material was already imported. Skipping import. """
+				f"""Material was already imported. Skipping import, """
+				'adding existing shit to the layer stack. '
 				"""Delete the material from bin to re-import it.""",
 				flags=0x00000020
 			)
