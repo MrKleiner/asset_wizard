@@ -108,7 +108,7 @@ class BlenderRender:
 		        - 'BOTH': Geometry is displaced by BOTH BW height and normal map.
 
 		    - film_exposure:
-		        Exposure (float)
+		        Exposure (float).
 
 		    - panorama_strength:
 		        Panorama Strength (default to 0.9)
@@ -125,6 +125,7 @@ class BlenderRender:
 		        - BLENDER_EEVEE_NEXT
 		        - BLENDER_WORKBENCH
 		        - CYCLES
+		        Default to CYCLES
 
 		Minimum outgoing request length is:
 		MAGIC_ID(3) + CMD(2) + PAYLOAD_LENGTH(4) = 9
@@ -408,7 +409,7 @@ class PreviewWizard:
 					if 'Remaining' in slot:
 						remaining = self.time_slot_to_ms(slot)
 
-				if current and remaining:
+				if current and remaining and self.prog_callback:
 					total_duration = current + remaining
 					self.prog_callback(abs(
 						1.0 - (remaining / total_duration)
@@ -449,11 +450,11 @@ class PreviewWizard:
 		self.cmd_gateway = CMDGateway(self.cl_con)
 		print('PWZRD main: accepted connection from Blender')
 
-		if self.prog_callback:
-			threading.Thread(
-				target=self.callback,
-				daemon=True
-			).start()
+		# if self.prog_callback:
+		threading.Thread(
+			target=self.callback,
+			daemon=True
+		).start()
 
 		return self
 
