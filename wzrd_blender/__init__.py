@@ -244,9 +244,11 @@ class BootlegProgressBar:
 		self.cl_con, self.cl_addr = self.skt.accept()
 		self.skt_wfile = self.cl_con.makefile('wb')
 
+		self.skt_wfile.write(b'SET')
 		self.skt_wfile.write(
 			self.bar_count.to_bytes(2, 'little')
 		)
+		self.skt_wfile.flush()
 
 		return self
 

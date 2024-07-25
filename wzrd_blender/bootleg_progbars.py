@@ -131,12 +131,15 @@ class BootlegProgBar:
 		sys.stdout.write('\n'.join(lines))
 
 	def run(self):
-		self.read_params()
 		while True:
 			cmd = self.skt_rfile.read(3)
 			if cmd == b'DIE':
 				time.sleep(1)
 				sys.exit()
+
+			if cmd == b'SET':
+				self.read_params()
+				continue
 
 			bar_idx = int.from_bytes(self.skt_rfile.read(2), 'little')
 			# print('Tweaking bar idx', bar_idx, self.bars)

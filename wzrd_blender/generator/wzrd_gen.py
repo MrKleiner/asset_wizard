@@ -14,6 +14,7 @@ import shutil
 import socket
 import multiprocessing
 import threading
+import pickle
 
 import bpy
 
@@ -873,6 +874,9 @@ class AssetWizard:
 
 		- cat_file:
 		  Absolute path pointing to the cats.txt file.
+
+		- pregen_index:
+		  Pregenerated index path.
 	"""
 	def __init__(self):
 		self._worker_list = None
@@ -996,9 +1000,21 @@ class AssetWizard:
 			return asset_infos
 
 	def create_asset_info_lists_mp(self):
+		pregen_index = self.cfg.get('pregen_index')
+		if pregen_index:
+			if Path(pregen_index).is_file():
+				with open(pregen_index, 'rb') as tgt_file:
+					return pickle.load(tgt_file)
+			else:
+				pregen_index = Path(pregen_index)
+
 		disks_dict = {}
 		for worker in self.worker_list:
-			if (not worker.__name__ in self.allowed_workers) and (not '$all' in self.allowed_workers):
+			eligible = any((
+				worker.__name__ in self.allowed_workers,
+				'$all' in self.allowed_workers,
+			))
+			if not eligible:
 				continue
 
 			disk_letter = Path(worker.LIB_BASE_PATH).anchor
@@ -1026,6 +1042,10 @@ class AssetWizard:
 			proc.join()
 
 		workers.clear()
+
+		if pregen_index:
+			with open(pregen_index, 'wb') as tgt_file:
+				pickle.dump(asset_infos, tgt_file)
 
 		return asset_infos
 
